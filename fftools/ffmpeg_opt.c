@@ -1037,6 +1037,11 @@ static int opt_filter_complex(void *optctx, const char *opt, const char *arg)
     return fg_create(NULL, graph_desc, sch);
 }
 
+static int opt_priming_file(void *optctx, const char *opt, const char *arg)
+{
+    return 0;
+}
+
 #if FFMPEG_OPT_FILTER_SCRIPT
 static int opt_filter_complex_script(void *optctx, const char *opt, const char *arg)
 {
@@ -1630,6 +1635,9 @@ const OptionDef options[] = {
     { "stats_mux_pre_fmt",  OPT_TYPE_STRING, OPT_PERSTREAM | OPT_EXPERT | OPT_OUTPUT,
         { .off = OFFSET(mux_stats_fmt)      },
         "format of the stats written with -stats_mux_pre" },
+    { "priming_file",       OPT_TYPE_FUNC,   OPT_FUNC_ARG | OPT_EXPERT,
+        { .func_arg = opt_priming_file },
+        "priming samples from this file", "file" },
 
     /* video options */
     { "vframes",                    OPT_TYPE_FUNC,   OPT_VIDEO | OPT_FUNC_ARG | OPT_PERFILE | OPT_OUTPUT | OPT_EXPERT | OPT_HAS_CANON,

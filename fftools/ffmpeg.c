@@ -927,6 +927,293 @@ static int64_t getmaxrss(void)
 #endif
 }
 
+#define MAX_CHANNEL_COUNT 8
+extern float priming_samples[MAX_CHANNEL_COUNT][1024];
+extern int   priming_sample_channels;
+
+static int decode_priming_audio(AVCodecContext *decoderCtx, AVPacket *packet, AVFrame *frame, int channels,
+        int last_nb_samples[2], uint8_t* last_samples[2][MAX_CHANNEL_COUNT])
+{
+    int dataSize, chDataSize;
+    int idx;
+    int ret;
+    int isPlanar;
+
+    ret = avcodec_send_packet(decoderCtx, packet);
+    if (ret < 0) {
+        av_log(NULL, AV_LOG_ERROR, "decode priming, avcodec_send_packet failed：%s\n", av_err2str(ret));
+        return -1;
+    }
+    
+    dataSize = av_get_bytes_per_sample(decoderCtx->sample_fmt);
+    if (dataSize < 0) {
+        av_log(NULL, AV_LOG_ERROR, "decode priming, av_get_bytes_per_sample failed\n");
+        return -1;
+    }
+    
+    isPlanar = av_sample_fmt_is_planar(decoderCtx->sample_fmt);
+    if (!isPlanar) {
+        dataSize *= channels;
+    }
+    
+    while (ret >= 0) {
+        ret = avcodec_receive_frame(decoderCtx, frame);
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+            return 0;
+        } else if (ret < 0) {
+            av_log(NULL, AV_LOG_ERROR, "decode priming, avcodec_receive_frame failed:%s\n", av_err2str(ret));
+            return -1;
+        }
+        
+        chDataSize = frame->nb_samples * dataSize;
+        
+        idx = 0;
+        if (frame->nb_samples >= 1024) {
+            if (last_nb_samples[1] != 0) {
+                last_nb_samples[1] = 0;
+                for (int ch = 0; ch < channels; ch++) {
+                    av_free(last_samples[1][ch]);
+                    last_samples[1][ch] = NULL;
+                }
+            }
+        } else {
+            if (last_nb_samples[1] != 0) {
+                idx = 1;
+                last_nb_samples[0] = last_nb_samples[1];
+                for (int ch = 0; ch < channels; ch++) {
+                    av_free(last_samples[0][ch]);
+                    last_samples[0][ch] = last_samples[1][ch];
+                }
+            } else if (last_nb_samples[0] != 0) {
+                idx = 1;
+            }
+        }
+        
+        last_nb_samples[idx] = frame->nb_samples;
+        if (isPlanar) {
+            for (int ch = 0; ch < channels; ch++) {
+                av_free(last_samples[idx][ch]);
+                last_samples[idx][ch] = (uint8_t*)av_memdup(frame->data[ch], chDataSize);
+            }
+        } else {
+            av_free(last_samples[idx][0]);
+            last_samples[idx][0] = (uint8_t*)av_memdup(frame->data[0], chDataSize);
+        }
+    }
+    return 0;
+}
+
+static int export_priming_samples(int channels, int last_nb_samples[2], uint8_t** last_samples[2])
+{
+    if (last_nb_samples[0] >= 1024) {
+        uint8_t** samples = last_samples[0];
+        for (int ch=0; ch<channels; ch++) {
+            memcpy(priming_samples[ch], samples[ch]+(last_nb_samples[0]-1024)*sizeof(float), 1024*sizeof(float));
+        }
+    } else {
+        int remain = (1024 - last_nb_samples[1]);
+        int skip = last_nb_samples[0] - remain;
+        for (int ch=0; ch<channels; ch++) {
+            memcpy(priming_samples[ch], last_samples[0][ch]+skip*sizeof(float), remain*sizeof(float));
+            memcpy(priming_samples[ch]+remain, last_samples[1][ch], last_nb_samples[1]*sizeof(float));
+        }
+    }
+    priming_sample_channels = channels;
+    return 0;
+}
+
+static int convert_fltp_format(AVCodecContext *decoderCtx, int last_nb_samples[2], uint8_t* last_samples[2][MAX_CHANNEL_COUNT])
+{
+    int ret;
+    SwrContext *swrCtx = NULL;
+    AVChannelLayout layout = decoderCtx->ch_layout;
+    int sampleRate = decoderCtx->sample_rate;
+    enum AVSampleFormat sampleFmt = decoderCtx->sample_fmt;
+    uint8_t **outData[2];
+    
+    ret = swr_alloc_set_opts2(&swrCtx,
+              &layout, AV_SAMPLE_FMT_FLTP, sampleRate,
+              &layout, sampleFmt, sampleRate, 0, NULL);
+    if (ret < 0) {
+        return ret;
+    }
+    ret = swr_init(swrCtx);
+    if (ret < 0) {
+        swr_free(&swrCtx);
+        return ret;
+    }
+    
+    for (int i=0; i<2; i++) {
+        if (last_nb_samples[i] == 0) {
+            break;
+        }
+
+        ret = av_samples_alloc_array_and_samples(&outData[i],
+                                           NULL,
+                                           layout.nb_channels,
+                                           last_nb_samples[i],
+                                           AV_SAMPLE_FMT_FLTP,
+                                           0);
+        if (ret < 0) {
+            swr_free(&swrCtx);
+            return ret;
+        }
+        ret = swr_convert(swrCtx, outData[i], last_nb_samples[i],
+                    (const uint8_t**)last_samples[i], last_nb_samples[i]);
+        if (ret < 0) {
+            swr_free(&swrCtx);
+            return ret;
+        }
+    }
+    
+    ret = export_priming_samples(layout.nb_channels, last_nb_samples, outData);
+    
+    for (int i=0; i<2; i++) {
+        if (last_nb_samples[i] == 0) {
+            break;
+        }
+        if (outData[i]) {
+            av_freep(&outData[i][0]);
+        }
+        av_freep(&outData[i]);
+    }
+    swr_free(&swrCtx);
+    
+    return ret;
+}
+
+static void process_priming_file(int argc, char **argv)
+{
+    const char *priming_filename = NULL;
+    AVFormatContext *inFCtx = NULL;
+    int ret;
+    int audioIndex;
+    AVCodecContext *decoderCtx;
+    const AVCodec *decoder;
+    AVFrame *frame;
+    AVPacket *packet;
+    int channels;
+    int last_nb_samples[2] = {0};
+    uint8_t* last_samples[2][MAX_CHANNEL_COUNT] = {0};
+
+    for (int i=0; i<argc; i++) {
+        if (strcmp(argv[i], "-priming_file") == 0 && i < argc-1) {
+            priming_filename = argv[i+1];
+            break;
+        }
+    }
+    if (priming_filename == NULL) {
+        return;
+    }
+    
+    ret = avformat_open_input(&inFCtx, priming_filename, NULL, NULL);
+    if (ret != 0) {
+        av_log(NULL, AV_LOG_ERROR, "process priming, open file failed\n");
+        return;
+    }
+    ret = avformat_find_stream_info(inFCtx, NULL);
+    if (ret != 0) {
+        av_log(NULL, AV_LOG_ERROR, "process priming, avformat_find_stream_info failed\n");
+        avformat_free_context(inFCtx);
+        return;
+    }
+    audioIndex = av_find_best_stream(inFCtx, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
+    if (audioIndex < 0) {
+        av_log(NULL, AV_LOG_ERROR, "process priming, av_find_best_stream failed\n");
+        avformat_free_context(inFCtx);
+        return;
+    }
+    
+    decoderCtx = avcodec_alloc_context3(NULL);
+    avcodec_parameters_to_context(decoderCtx, inFCtx->streams[audioIndex]->codecpar);
+    decoder = avcodec_find_decoder(decoderCtx->codec_id);
+    if (decoder == NULL) {
+        av_log(NULL, AV_LOG_ERROR, "process priming, avcodec_find_encoder failed\n");
+        avformat_free_context(inFCtx);
+        avcodec_free_context(&decoderCtx);
+        return;
+    }
+    ret = avcodec_open2(decoderCtx, decoder, NULL);
+    if (ret < 0) {
+        av_log(NULL, AV_LOG_ERROR, "process priming, avcodec_open2 failed：%s\n", av_err2str(ret));
+        avformat_free_context(inFCtx);
+        avcodec_free_context(&decoderCtx);
+        return;
+    }
+    
+    channels = decoderCtx->ch_layout.nb_channels;
+    if (channels > MAX_CHANNEL_COUNT) {
+        av_log(NULL, AV_LOG_ERROR, "process priming, too many channels\n");
+        avformat_free_context(inFCtx);
+        avcodec_free_context(&decoderCtx);
+        return;
+    }
+
+    frame = av_frame_alloc();
+    if (frame == NULL) {
+        av_log(NULL, AV_LOG_ERROR, "process priming, av_frame_alloc failed\n");
+        avformat_free_context(inFCtx);
+        avcodec_free_context(&decoderCtx);
+        return;
+    }
+    
+    packet = av_packet_alloc();
+    if (packet == NULL) {
+        av_log(NULL, AV_LOG_ERROR, "process priming, av_packet_alloc failed\n");
+        avformat_free_context(inFCtx);
+        avcodec_free_context(&decoderCtx);
+        av_frame_free(&frame);
+        return;
+    }
+    
+    ret = 0;
+    while (av_read_frame(inFCtx, packet) >= 0) {
+        if (packet->stream_index == audioIndex) {
+            ret = decode_priming_audio(decoderCtx, packet, frame, channels, last_nb_samples, last_samples);
+            if (ret < 0) {
+                break;
+            }
+        }
+        av_packet_unref(packet);
+    }
+    if (ret == 0) {  // flush
+        ret = decode_priming_audio(decoderCtx, NULL, frame, channels, last_nb_samples, last_samples);
+    }
+    
+    if (ret < 0) {
+        av_log(NULL, AV_LOG_ERROR, "process priming, decode audio failed\n");
+    } else {
+        if ((last_nb_samples[0] + last_nb_samples[1]) >= 1024) {
+            if (decoderCtx->sample_fmt == AV_SAMPLE_FMT_FLTP) {
+                uint8_t **samples[2];
+                samples[0] = (uint8_t **)last_samples[0];
+                samples[1] = (uint8_t **)last_samples[1];
+                ret = export_priming_samples(channels, last_nb_samples, samples);
+            } else {
+                ret = convert_fltp_format(decoderCtx, last_nb_samples, last_samples);
+            }
+            if (ret < 0) {
+                av_log(NULL, AV_LOG_ERROR, "process priming, convert fltp format failed\n");
+            }
+        } else {
+            av_log(NULL, AV_LOG_ERROR, "process priming, The number of samples captured is not enough to reach 1024\n");
+        }
+    }
+
+    for (int i=0; i<2; i++) {
+        if (last_nb_samples[i] != 0) {
+            for (int ch = 0; ch < channels; ch++) {
+                av_free(last_samples[i][ch]);
+            }
+        }
+    }
+
+    avformat_free_context(inFCtx);
+    avcodec_free_context(&decoderCtx);
+    av_frame_free(&frame);
+    av_packet_free(&packet);
+}
+
 int main(int argc, char **argv)
 {
     Scheduler *sch = NULL;
@@ -947,6 +1234,8 @@ int main(int argc, char **argv)
     avformat_network_init();
 
     show_banner(argc, argv, options);
+
+    process_priming_file(argc, argv);
 
     sch = sch_alloc();
     if (!sch) {
@@ -971,7 +1260,7 @@ int main(int argc, char **argv)
         ret = 1;
         goto finish;
     }
-
+    
     current_time = ti = get_benchmark_time_stamps();
     ret = transcode(sch);
     if (ret >= 0 && do_benchmark) {

@@ -86,6 +86,9 @@
  * - reorder_map: reorders the channels.
  *
  */
+float priming_samples[8][1024];
+int   priming_sample_channels = 0;
+
 static const AACPCEInfo aac_pce_configs[] = {
     {
         .layout = AV_CHANNEL_LAYOUT_MONO,
@@ -1230,6 +1233,11 @@ static av_cold int alloc_buffers(AVCodecContext *avctx, AACEncContext *s)
     for(ch = 0; ch < s->channels; ch++)
         s->planar_samples[ch] = s->buffer.samples + 3 * 1024 * ch;
 
+    if (priming_sample_channels > 0) {
+        for(ch = 0; ch < priming_sample_channels; ch++) {
+            memcpy(s->planar_samples[ch] + 2048, priming_samples[ch],  1024*sizeof(priming_samples[0][0]));
+        }
+    }
     return 0;
 }
 

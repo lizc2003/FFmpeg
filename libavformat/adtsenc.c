@@ -161,6 +161,7 @@ static int adts_write_frame_header(AVFormatContext *s, ADTSContext *ctx,
     return 0;
 }
 
+extern int priming_sample_channels;
 static int adts_write_packet(AVFormatContext *s, AVPacket *pkt)
 {
     ADTSContext *adts = s->priv_data;
@@ -187,6 +188,11 @@ static int adts_write_packet(AVFormatContext *s, AVPacket *pkt)
             memcpy(par->extradata, side_data, side_data_size);
         }
     }
+    
+    if (priming_sample_channels >0 && pkt->pts < 0) {
+        return 0;
+    }
+    
     if (adts->write_adts) {
         int err = adts_write_frame_header(s, adts, buf, pkt->size,
                                              adts->pce_size);
