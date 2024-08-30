@@ -5,7 +5,9 @@ ffmpeg modified version supports gapless aac.
 
 ## Compile
 
-apt install nasm libmp3lame-dev libgnutls28-dev libvorbis-dev libfdk-aac-dev libopus-dev
+apt install build-essential nasm
+
+apt install libmp3lame-dev libgnutls28-dev libvorbis-dev libfdk-aac-dev libopus-dev
 
 ./configure --prefix=/opt/ffmpeg-aac \
 --extra-ldexeflags="-Wl,--rpath=/opt/ffmpeg-aac/lib" \
@@ -30,9 +32,9 @@ make install
 
 ## Run
 
-/opt/ffmpeg-aac/bin/ffmpeg -i input.wav -y -c:a aac -nodelay_mode 1 output.aac
+/opt/ffmpeg-aac/bin/ffmpeg -i input.wav -hide_banner -y -c:a aac -nodelay_mode 1 output.aac
 
-/opt/ffmpeg-aac/bin/ffmpeg -i input.wav -y -c:a libfdk_aac -nodelay_mode 1 output.aac
+/opt/ffmpeg-aac/bin/ffmpeg -i input.wav -hide_banner -y -c:a libfdk_aac -nodelay_mode 1 output.aac
 
 
 ## License
