@@ -25,11 +25,13 @@ apt install nasm libmp3lame-dev libgnutls28-dev libvorbis-dev libfdk-aac-dev lib
 --disable-htmlpages
 
 make -j $(nproc)
+
 make install
 
 ## Run
 
 ffmpeg -i input.wav -y -c:a aac -nodelay_mode 1 output.aac
+
 ffmpeg -i input.wav -y -c:a libfdk_aac -nodelay_mode 1 output.aac
 
 
