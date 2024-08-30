@@ -46,6 +46,7 @@ typedef struct ADTSContext {
     int id3v2tag;
     int mpeg_id;
     int nodelay_mode;
+    int64_t nb_samples;
     uint8_t pce_data[MAX_PCE_SIZE];
 } ADTSContext;
 
@@ -193,6 +194,8 @@ static int adts_write_packet(AVFormatContext *s, AVPacket *pkt)
         return 0;
     }
     
+    adts->nb_samples += pkt->duration;
+    
     if (adts->write_adts) {
         int err = adts_write_frame_header(s, adts, buf, pkt->size,
                                              adts->pce_size);
@@ -209,12 +212,54 @@ static int adts_write_packet(AVFormatContext *s, AVPacket *pkt)
     return 0;
 }
 
+static int get_sample_rate(int rateIdx)
+{
+    switch (rateIdx) {
+        case 0:
+            return 96000;
+        case 1:
+            return 88200;
+        case 2:
+            return 64000;
+        case 3:
+            return 48000;
+        case 4:
+            return 44100;
+        case 5:
+            return 32000;
+        case 6:
+            return 24000;
+        case 7:
+            return 22050;
+        case 8:
+            return 16000;
+        case 9:
+            return 12000;
+        case 10:
+            return 11025;
+        case 11:
+            return 8000;
+        case 12:
+            return 7350;
+        default:
+            return 0;
+    }
+}
+
 static int adts_write_trailer(AVFormatContext *s)
 {
     ADTSContext *adts = s->priv_data;
+    int sampleRate = get_sample_rate(adts->sample_rate_index);
+    double duration = 0;
 
     if (adts->apetag)
         ff_ape_write_tag(s);
+
+    if (sampleRate > 0) {
+        duration = (double)adts->nb_samples/(double)sampleRate;
+    }
+    av_log(NULL, AV_LOG_INFO, "[adts end] duration: %.6lf, samples: %" PRId64 ", sample rate: %d\n",
+          duration, adts->nb_samples, sampleRate);
 
     return 0;
 }
