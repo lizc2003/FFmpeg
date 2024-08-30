@@ -45,6 +45,7 @@ typedef struct ADTSContext {
     int apetag;
     int id3v2tag;
     int mpeg_id;
+    int nodelay_mode;
     uint8_t pce_data[MAX_PCE_SIZE];
 } ADTSContext;
 
@@ -187,6 +188,11 @@ static int adts_write_packet(AVFormatContext *s, AVPacket *pkt)
             memcpy(par->extradata, side_data, side_data_size);
         }
     }
+    
+    if (adts->nodelay_mode && pkt->pts < 0) {
+        return 0;
+    }
+    
     if (adts->write_adts) {
         int err = adts_write_frame_header(s, adts, buf, pkt->size,
                                              adts->pce_size);
@@ -219,6 +225,7 @@ static const AVOption options[] = {
     { "write_id3v2",  "Enable ID3v2 tag writing",   OFFSET(id3v2tag), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, ENC},
     { "write_apetag", "Enable APE tag writing",     OFFSET(apetag),   AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, ENC},
     { "write_mpeg2",  "Set MPEG version to MPEG-2", OFFSET(mpeg_id),  AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, ENC},
+    { "nodelay_mode",  "Drop first priming frame", OFFSET(nodelay_mode),  AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, ENC},
     { NULL },
 };
 
