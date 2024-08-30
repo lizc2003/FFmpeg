@@ -30,9 +30,9 @@ make install
 
 ## Run
 
-ffmpeg -i input.wav -y -c:a aac -nodelay_mode 1 output.aac
+/opt/ffmpeg-aac/bin/ffmpeg -i input.wav -y -c:a aac -nodelay_mode 1 output.aac
 
-ffmpeg -i input.wav -y -c:a libfdk_aac -nodelay_mode 1 output.aac
+/opt/ffmpeg-aac/bin/ffmpeg -i input.wav -y -c:a libfdk_aac -nodelay_mode 1 output.aac
 
 
 ## License
