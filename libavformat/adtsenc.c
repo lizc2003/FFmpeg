@@ -46,7 +46,6 @@ typedef struct ADTSContext {
     int id3v2tag;
     int mpeg_id;
     int nodelay_mode;
-    int sample_rate;
     int64_t nb_samples;
     uint8_t pce_data[MAX_PCE_SIZE];
 } ADTSContext;
@@ -164,6 +163,55 @@ static int adts_write_frame_header(AVFormatContext *s, ADTSContext *ctx,
     return 0;
 }
 
+static int adts_write_packet(AVFormatContext *s, AVPacket *pkt)
+{
+    ADTSContext *adts = s->priv_data;
+    AVCodecParameters *par = s->streams[0]->codecpar;
+    AVIOContext *pb = s->pb;
+    uint8_t buf[ADTS_HEADER_SIZE];
+
+    if (!pkt->size)
+        return 0;
+    if (!par->extradata_size) {
+        uint8_t *side_data;
+        size_t side_data_size;
+        int ret;
+
+        side_data = av_packet_get_side_data(pkt, AV_PKT_DATA_NEW_EXTRADATA,
+                                            &side_data_size);
+        if (side_data_size) {
+            ret = adts_decode_extradata(s, adts, side_data, side_data_size);
+            if (ret < 0)
+                return ret;
+            ret = ff_alloc_extradata(par, side_data_size);
+            if (ret < 0)
+                return ret;
+            memcpy(par->extradata, side_data, side_data_size);
+        }
+    }
+    
+    if (adts->nodelay_mode && pkt->pts < 0) {
+        return 0;
+    }
+    
+    adts->nb_samples += pkt->duration;
+    
+    if (adts->write_adts) {
+        int err = adts_write_frame_header(s, adts, buf, pkt->size,
+                                             adts->pce_size);
+        if (err < 0)
+            return err;
+        avio_write(pb, buf, ADTS_HEADER_SIZE);
+        if (adts->pce_size) {
+            avio_write(pb, adts->pce_data, adts->pce_size);
+            adts->pce_size = 0;
+        }
+    }
+    avio_write(pb, pkt->data, pkt->size);
+
+    return 0;
+}
+
 static int get_sample_rate(int rateIdx)
 {
     switch (rateIdx) {
@@ -198,71 +246,32 @@ static int get_sample_rate(int rateIdx)
     }
 }
 
-static int adts_write_packet(AVFormatContext *s, AVPacket *pkt)
-{
-    ADTSContext *adts = s->priv_data;
-    AVCodecParameters *par = s->streams[0]->codecpar;
-    AVIOContext *pb = s->pb;
-    uint8_t buf[ADTS_HEADER_SIZE];
-
-    if (!pkt->size)
-        return 0;
-    if (!par->extradata_size) {
-        uint8_t *side_data;
-        size_t side_data_size;
-        int ret;
-
-        side_data = av_packet_get_side_data(pkt, AV_PKT_DATA_NEW_EXTRADATA,
-                                            &side_data_size);
-        if (side_data_size) {
-            ret = adts_decode_extradata(s, adts, side_data, side_data_size);
-            if (ret < 0)
-                return ret;
-            ret = ff_alloc_extradata(par, side_data_size);
-            if (ret < 0)
-                return ret;
-            memcpy(par->extradata, side_data, side_data_size);
-        }
-    }
-    
-    if (adts->nodelay_mode && pkt->pts < 0) {
-        return 0;
-    }
-    if (adts->sample_rate == 0) {
-        adts->sample_rate = get_sample_rate(adts->sample_rate_index);
-    }
-    
-    adts->nb_samples += pkt->duration;
-    
-    if (adts->write_adts) {
-        int err = adts_write_frame_header(s, adts, buf, pkt->size,
-                                             adts->pce_size);
-        if (err < 0)
-            return err;
-        avio_write(pb, buf, ADTS_HEADER_SIZE);
-        if (adts->pce_size) {
-            avio_write(pb, adts->pce_data, adts->pce_size);
-            adts->pce_size = 0;
-        }
-    }
-    avio_write(pb, pkt->data, pkt->size);
-
-    return 0;
-}
-
 static int adts_write_trailer(AVFormatContext *s)
 {
     ADTSContext *adts = s->priv_data;
+    int sampleRate = 0;
     double duration = 0;
 
     if (adts->apetag)
         ff_ape_write_tag(s);
 
-    if (adts->sample_rate > 0) {
-        duration = (double)adts->nb_samples/(double)adts->sample_rate;
+    if (adts->write_adts) {
+        sampleRate = get_sample_rate(adts->sample_rate_index);
+    } else {
+        int nb_streams = s->nb_streams;
+        for (int i=0; i<nb_streams; i++) {
+            if (s->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+                sampleRate = s->streams[i]->codecpar->sample_rate;
+                break;
+            }
+        }
+    }
+    
+    if (sampleRate > 0) {
+        duration = (double)adts->nb_samples/(double)sampleRate;
     }
     av_log(NULL, AV_LOG_INFO, "[adts end] duration: %.6lf, samples: %" PRId64 ", sample rate: %d\n",
-          duration, adts->nb_samples, adts->sample_rate);
+          duration, adts->nb_samples, sampleRate);
 
     return 0;
 }
