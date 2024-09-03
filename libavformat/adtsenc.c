@@ -212,9 +212,9 @@ static int adts_write_packet(AVFormatContext *s, AVPacket *pkt)
     return 0;
 }
 
-static int get_sample_rate(int rateIdx)
+static int get_sample_rate(int rate_idx)
 {
-    switch (rateIdx) {
+    switch (rate_idx) {
         case 0:
             return 96000;
         case 1:
@@ -249,29 +249,33 @@ static int get_sample_rate(int rateIdx)
 static int adts_write_trailer(AVFormatContext *s)
 {
     ADTSContext *adts = s->priv_data;
-    int sampleRate = 0;
+    int sample_rate = 0;
     double duration = 0;
 
     if (adts->apetag)
         ff_ape_write_tag(s);
 
     if (adts->write_adts) {
-        sampleRate = get_sample_rate(adts->sample_rate_index);
+        sample_rate = get_sample_rate(adts->sample_rate_index);
     } else {
         int nb_streams = s->nb_streams;
         for (int i=0; i<nb_streams; i++) {
             if (s->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
-                sampleRate = s->streams[i]->codecpar->sample_rate;
+                sample_rate = s->streams[i]->codecpar->sample_rate;
                 break;
             }
         }
     }
     
-    if (sampleRate > 0) {
-        duration = (double)adts->nb_samples/(double)sampleRate;
+    if (sample_rate > 0) {
+        int64_t nb_samples = adts->nb_samples;
+        if ((nb_samples % 1024) != 0) {
+            nb_samples = (nb_samples/1024 + 1) * 1024;
+        }
+        duration = (double)nb_samples/(double)sample_rate;
     }
     av_log(NULL, AV_LOG_INFO, "[adts end] duration: %.6lf, samples: %" PRId64 ", sample rate: %d\n",
-          duration, adts->nb_samples, sampleRate);
+          duration, adts->nb_samples, sample_rate);
 
     return 0;
 }
